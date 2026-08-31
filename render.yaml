@@ -1,0 +1,51 @@
+services:
+
+  # ── API Server ────────────────────────────────────────────────
+  - type: web
+    name: algotrader-api
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python api_server.py
+    plan: free
+    ipAllowList: []
+    envVars:
+      - key: INITIAL_CAPITAL
+        value: "500000"
+      - key: REDIS_URL
+        fromService:
+          type: redis
+          name: algotrader-redis
+          property: connectionString
+      - key: PYTHON_VERSION
+        value: "3.11.0"
+
+  # ── Trading Bot ───────────────────────────────────────────────
+  - type: worker
+    name: algotrader-bot
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python paper_main.py
+    plan: free
+    ipAllowList: []
+    envVars:
+      - key: INITIAL_CAPITAL
+        value: "500000"
+      - key: REDIS_URL
+        fromService:
+          type: redis
+          name: algotrader-redis
+          property: connectionString
+      - key: USE_SCREENER
+        value: "true"
+      - key: SCREENER_REFRESH_MIN
+        value: "60"
+      - key: LOOP_INTERVAL_SEC
+        value: "60"
+      - key: PYTHON_VERSION
+        value: "3.11.0"
+
+  # ── Redis (shared state) ──────────────────────────────────────
+  - type: redis
+    name: algotrader-redis
+    plan: free
+    maxmemoryPolicy: allkeys-lru
