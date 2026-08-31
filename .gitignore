@@ -1,0 +1,6 @@
+signal_log.json
+paper_trades.json
+watchlist.json
+logs/
+*.pyc
+__pycache__/
