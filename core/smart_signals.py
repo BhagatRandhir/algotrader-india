@@ -79,7 +79,8 @@ class NewsSentimentSignal:
             feed = fp.parse(url)
 
             if not feed.entries:
-                return SignalResult(True, 0.0, "No news found", "neutral")
+                # No news = neutral, always allow
+                return SignalResult(True, 0.0, "No news — neutral", "neutral")
 
             scores = []
             headlines = []
@@ -105,7 +106,8 @@ class NewsSentimentSignal:
 
         except Exception as exc:
             logger.debug(f"News sentiment {symbol}: {exc}")
-            return SignalResult(True, 0.0, "News fetch failed — neutral", "")
+            # Network blocked or error — never block trade due to news failure
+            return SignalResult(True, 0.0, "News unavailable — allowing", "")
 
 
 # ── 2. Sector Strength ────────────────────────────────────────────
@@ -322,13 +324,11 @@ def run_smart_signals(
         earnings.score * 0.10
     )
 
-    # Block if ANY hard blocker fires
-    hard_block = not earnings.allow   # earnings = always hard block
-    soft_block = not news.allow or not sector.allow or not forecast.allow
-
-    # Allow if no hard block and at most 1 soft block
+    # Only hard block on earnings (always block)
+    # Soft signals: need 2+ to block (1 bad signal is not enough)
+    hard_block  = not earnings.allow
     soft_blocks = sum([not news.allow, not sector.allow, not forecast.allow])
-    allow = not hard_block and soft_blocks <= 1
+    allow       = not hard_block and soft_blocks <= 1
 
     return {
         "allow":    allow,

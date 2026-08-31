@@ -86,15 +86,13 @@ class MarketContextFilter:
 
         try:
             from core.nse_data import get_client
-            nse = get_client()
-
-            # Nifty50 stocks — check if majority are up
+            nse    = get_client()
             stocks = nse.get_nifty50_quotes()
+
             if stocks:
                 up_count = sum(1 for s in stocks if s["change_pct"] > 0)
                 breadth  = up_count / len(stocks)
-                nifty_up = breadth >= 0.55   # 55%+ stocks rising
-
+                nifty_up = breadth >= 0.55
                 if not nifty_up:
                     logger.info(f"🌡️ Nifty breadth weak: {breadth:.0%} stocks up")
                     return MarketFilterResult(
@@ -102,21 +100,38 @@ class MarketContextFilter:
                         reason=f"📉 Nifty weak — only {breadth:.0%} stocks rising",
                         nifty_up=False, vix=vix,
                     )
+            else:
+                # NSE blocked — use yfinance for Nifty direction
+                logger.debug("NSE blocked — using yfinance for Nifty check")
+                import yfinance as yf
+                nifty_df = yf.Ticker("^NSEI").history(period="2d", interval="1d")
+                if len(nifty_df) >= 2:
+                    nifty_chg = (nifty_df["Close"].iloc[-1] - nifty_df["Close"].iloc[-2])                                 / nifty_df["Close"].iloc[-2] * 100
+                    nifty_up = nifty_chg > -0.5   # allow unless Nifty down >0.5%
+                    if not nifty_up:
+                        return MarketFilterResult(
+                            allow=False, size_mult=0.0,
+                            reason=f"📉 Nifty down {nifty_chg:.1f}% today",
+                            nifty_up=False, vix=vix,
+                        )
+                else:
+                    nifty_up = True   # can't check → allow
 
-            # VIX check
-            indices = nse._get("https://www.nseindia.com/api/allIndices")
-            if indices:
-                for idx in indices.get("data", []):
-                    if "VIX" in idx.get("index", "").upper():
-                        vix = float(idx.get("last", 15.0))
-                        break
+            # VIX via yfinance fallback
+            try:
+                import yfinance as yf
+                vix_df = yf.Ticker("^INDIAVIX").history(period="2d", interval="1d")
+                if not vix_df.empty:
+                    vix = round(float(vix_df["Close"].iloc[-1]), 1)
+            except Exception:
+                pass
 
         except Exception as exc:
-            logger.debug(f"Market filter fetch error: {exc}")
-            # Can't fetch — allow trading at reduced size
+            logger.debug(f"Market filter error: {exc}")
+            # All sources failed — allow at reduced size, don't block
             return MarketFilterResult(
                 allow=True, size_mult=0.75,
-                reason="Market data unavailable — reduced size",
+                reason="Market data unavailable — trading at 75% size",
                 nifty_up=True, vix=15.0,
             )
 
