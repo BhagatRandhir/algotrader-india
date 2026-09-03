@@ -410,9 +410,8 @@ class StockScreener:
                 candidates_raw[s["symbol"]] = s
 
         if not candidates_raw:
-            logger.warning("NSE screener: no data — using manual watchlist")
-            from utils.nse_universe import NSE_UNIVERSE
-            return NSE_UNIVERSE[:self.cfg.max_picks]
+            logger.warning("NSE screener: no data — raising to trigger yfinance fallback")
+            raise ValueError("NSE screener returned no data")
 
         # Score each candidate
         scored = []

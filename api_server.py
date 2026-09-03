@@ -300,6 +300,68 @@ def watchlist():
     return jsonify(get_store().get_watchlist())
 
 
+
+@app.route("/api/market")
+def market():
+    """Real market context: global sentiment + Nifty trend + FII."""
+    result = {
+        "global":  {},
+        "nifty":   {},
+        "fii":     {},
+        "timestamp": now_ist().isoformat(),
+    }
+    try:
+        from core.global_sentiment import GlobalSentimentFilter
+        g = GlobalSentimentFilter().analyse()
+        result["global"] = {
+            "mood":       g.mood.value,
+            "size_mult":  g.size_multiplier,
+            "bull_count": g.bull_count,
+            "bear_count": g.bear_count,
+            "signals": [
+                {
+                    "name":       s.name,
+                    "price":      s.last_price,
+                    "change_pct": s.change_pct,
+                    "signal":     s.signal,
+                    "reason":     s.reason,
+                }
+                for s in g.signals
+            ],
+        }
+    except Exception as exc:
+        logger.debug(f"/api/market global: {exc}")
+
+    try:
+        from core.nifty_trend import NiftyTrendFilter
+        n = NiftyTrendFilter().analyse()
+        result["nifty"] = {
+            "regime":      n.regime.value,
+            "allow_entry": n.allow_entry,
+            "size_mult":   n.size_multiplier,
+            "price":       n.nifty_price,
+            "ema20":       n.ema20,
+            "ema50":       n.ema50,
+            "ema200":      n.ema200,
+            "adx":         getattr(n, "adx", 0),
+        }
+    except Exception as exc:
+        logger.debug(f"/api/market nifty: {exc}")
+
+    try:
+        from core.fii_dii import FIIDIIFilter
+        f = FIIDIIFilter().analyse()
+        result["fii"] = {
+            "mood":        f.mood.value,
+            "allow_entry": f.allow_entry,
+            "size_mult":   f.size_multiplier,
+        }
+    except Exception as exc:
+        logger.debug(f"/api/market fii: {exc}")
+
+    return jsonify(result)
+
+
 @app.route("/")
 def health():
     return jsonify({"status": "ok", "service": "AlgoTrader India API"})
