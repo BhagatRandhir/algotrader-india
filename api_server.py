@@ -227,16 +227,64 @@ def live():
             (_broker.get_ltp(s) or p.get("average_price", 0)) * abs(p.get("qty", 0))
             for s, p in positions.items()
         )
+        # Build today's trade history with entry/exit/P&L
+        all_orders  = store.get_all_orders()
+        today       = now_ist().strftime("%Y-%m-%d")
+        today_orders= [o for o in all_orders
+                       if o.get("timestamp","").startswith(today)
+                       and o["status"]=="COMPLETE"]
+
+        # Match BUY→SELL pairs
+        buys_map = {}
+        trade_history = []
+        for o in sorted(today_orders, key=lambda x: x.get("timestamp","")):
+            if o["action"] == "BUY":
+                buys_map[o["symbol"]] = o
+            elif o["action"] == "SELL" and o["symbol"] in buys_map:
+                b   = buys_map.pop(o["symbol"])
+                pnl = round((o["price"] - b["price"]) * o["quantity"], 2)
+                trade_history.append({
+                    "symbol":     o["symbol"],
+                    "qty":        o["quantity"],
+                    "entry":      round(b["price"], 2),
+                    "exit":       round(o["price"], 2),
+                    "pnl":        pnl,
+                    "pnl_pct":    round((o["price"]-b["price"])/b["price"]*100, 2),
+                    "entry_time": b.get("timestamp","")[-8:-3],
+                    "exit_time":  o.get("timestamp","")[-8:-3],
+                    "status":     "WIN" if pnl > 0 else "LOSS",
+                })
+
+        # Still open positions count as open trades
+        open_trades = []
+        for sym, pos in positions.items():
+            if sym in buys_map:
+                b   = buys_map[sym]
+                ltp = (_broker.get_ltp(sym) or pos.get("average_price",0))
+                unreal = round((ltp - b["price"]) * abs(pos.get("qty",0)), 2)
+                open_trades.append({
+                    "symbol":     sym,
+                    "qty":        abs(pos.get("qty",0)),
+                    "entry":      round(b["price"],2),
+                    "exit":       None,
+                    "pnl":        unreal,
+                    "pnl_pct":    round((ltp-b["price"])/b["price"]*100,2) if b["price"] else 0,
+                    "entry_time": b.get("timestamp","")[-8:-3],
+                    "exit_time":  "OPEN",
+                    "status":     "OPEN",
+                })
+
         return jsonify({
-            "nav":          round(nav, 2),
-            "cash":         round(cash, 2),
-            "daily_pnl":    round(daily_pnl, 2),
-            "trades_today": store.get_trades_today(),
-            "positions":    _enrich_positions(positions),
-            "signal_log":   store.get_signals_today(),
-            "nav_timeline": store.get_nav_timeline(),
-            "market_open":  is_market_open(),
-            "timestamp":    now_ist().isoformat(),
+            "nav":           round(nav, 2),
+            "cash":          round(cash, 2),
+            "daily_pnl":     round(daily_pnl, 2),
+            "trades_today":  store.get_trades_today(),
+            "positions":     _enrich_positions(positions),
+            "signal_log":    store.get_signals_today(),
+            "nav_timeline":  store.get_nav_timeline(),
+            "trade_history": open_trades + trade_history,
+            "market_open":   is_market_open(),
+            "timestamp":     now_ist().isoformat(),
         })
     except Exception as exc:
         logger.error(f"/api/live: {exc}")
