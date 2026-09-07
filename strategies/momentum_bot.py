@@ -53,8 +53,8 @@ class MomentumBotStrategy(BaseStrategy):
         rsi_buy_hi:  float = 92.0,
         rsi_sell:    float = 45.0,
         rsi_ob:      float = 96.0,
-        vol_mult:    float = 1.5,    # raised from 1.3
-        min_day_chg: float = 0.003,  # NEW: minimum +0.3% day change
+        vol_mult:    float = 1.8,    # raised from 1.5 — only buy on strong volume
+        min_day_chg: float = 0.005,  # minimum +0.5% day change (raised from 0.3%)
     ):
         self.ema_fast    = ema_fast
         self.ema_mid     = ema_mid

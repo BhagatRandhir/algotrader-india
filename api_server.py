@@ -25,6 +25,7 @@ from core.paper_broker import PaperBroker
 from core.nse_data import get_client as get_nse
 from strategies.momentum_bot import MomentumBotStrategy
 from core.smart_signals import run_smart_signals
+from core.earnings_analyser import get_earnings_analyser
 from core.risk import RiskConfig, RiskManager
 from utils.market_hours import is_market_open, now_ist
 
@@ -149,12 +150,12 @@ def _analyse_symbol(symbol: str) -> dict:
                         if len(df) >= 2 else 0.0)
 
     checks = [
-        {"label":"Price > VWAP",      "pass":price>vwap,           "detail":f"₹{price:.0f} vs ₹{vwap:.0f}"},
-        {"label":"Price > EMA20",     "pass":price>ema20,          "detail":f"EMA20=₹{ema20:.0f}"},
-        {"label":"EMA20 > EMA50",     "pass":ema20>ema50,          "detail":f"EMA50=₹{ema50:.0f}"},
-        {"label":"RSI 55–92",         "pass":55<=rsi<=92,          "detail":f"RSI={rsi:.0f}"},
-        {"label":"Volume > 1.5×",     "pass":volume>1.5*avg_vol,   "detail":f"{volume/(avg_vol+1):.1f}× avg"},
-        {"label":"Day change > 0.3%", "pass":day_chg>=0.003,       "detail":f"{day_chg:+.2%}"},
+        {"label":"Price > VWAP",      "pass": bool(price>vwap),           "detail":f"₹{price:.0f} vs ₹{vwap:.0f}"},
+        {"label":"Price > EMA20",     "pass": bool(price>ema20),          "detail":f"EMA20=₹{ema20:.0f}"},
+        {"label":"EMA20 > EMA50",     "pass": bool(ema20>ema50),          "detail":f"EMA50=₹{ema50:.0f}"},
+        {"label":"RSI 55–92",         "pass": bool(55<=rsi<=92),          "detail":f"RSI={rsi:.0f}"},
+        {"label":"Volume > 1.5×",     "pass": bool(volume>1.5*avg_vol),   "detail":f"{volume/(avg_vol+1):.1f}× avg"},
+        {"label":"Day change > 0.3%", "pass": bool(day_chg>=0.003),       "detail":f"{day_chg:+.2%}"},
     ]
     score = sum(1 for c in checks if c["pass"])
 
@@ -181,7 +182,30 @@ def _analyse_symbol(symbol: str) -> dict:
     except Exception as exc:
         logger.debug(f"Smart signals {symbol}: {exc}")
 
-    return {
+    # Run earnings analysis
+    earnings = {}
+    try:
+        ea = get_earnings_analyser()
+        er = ea.analyse(symbol)
+        earnings = ea.format_for_display(er)
+    except Exception as exc:
+        logger.debug(f"Earnings analysis {symbol}: {exc}")
+
+    # Convert all numpy/pandas types to Python native for JSON serialization
+    import numpy as np, json as _json
+
+    def _sanitize(obj):
+        if isinstance(obj, dict):
+            return {k: _sanitize(v) for k, v in obj.items()}
+        if isinstance(obj, list):
+            return [_sanitize(v) for v in obj]
+        if isinstance(obj, (np.bool_)):    return bool(obj)
+        if isinstance(obj, (np.integer)):  return int(obj)
+        if isinstance(obj, (np.floating)): return float(obj)
+        if isinstance(obj, float) and (obj != obj):  return None  # NaN
+        return obj
+
+    return _sanitize({
         "symbol":        symbol,
         "price":         round(price, 2),
         "vwap":          round(vwap, 2),
@@ -211,7 +235,8 @@ def _analyse_symbol(symbol: str) -> dict:
         },
         "timestamp": now_ist().isoformat(),
         "smart_signals": smart,
-    }
+        "earnings": earnings,
+    })
 
 
 # ── Routes ────────────────────────────────────────────────────────

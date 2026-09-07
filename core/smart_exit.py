@@ -90,6 +90,19 @@ class SmartExitManager:
         if not pos or pos.qty <= 0:
             return HOLD
 
+        # ── Minimum hold time: 15 minutes ────────────────────────
+        held_min = (datetime.now() - pos.entry_time).total_seconds() / 60
+        if held_min < 20:
+            # Only exit on hard SL hit in first 15 min
+            if current_price <= pos.sl_price:
+                return ExitDecision(
+                    "FULL", pos.qty,
+                    f"🛑 Hard SL hit early @₹{current_price:.2f} (held {held_min:.0f}min — min=20)",
+                    pos.sl_price,
+                )
+            logger.debug(f"{symbol}: holding — only {held_min:.0f} min (min=20)")
+            return ExitDecision("HOLD", 0, "", pos.sl_price)
+
         # ── Update peak ───────────────────────────────────────────
         pos.peak_price = max(pos.peak_price, current_price)
 
@@ -151,7 +164,7 @@ class SmartExitManager:
         if df is None or len(df) < 25:
             return False
         avg_vol = df["volume"].iloc[-22:-2].mean()
-        recent  = df["volume"].iloc[-2:].mean()
+        recent  = df["volume"].iloc[-5:].mean()
         return bool(recent < self.DRY_UP_MULT * avg_vol)
 
     def _rsi_divergence(self, df: pd.DataFrame) -> bool:
@@ -164,11 +177,12 @@ class SmartExitManager:
             gain     = delta.clip(lower=0).ewm(alpha=1/14, adjust=False).mean()
             loss     = (-delta.clip(upper=0)).ewm(alpha=1/14, adjust=False).mean()
             rsi_ser  = 100 - 100 / (1 + gain / (loss + 1e-10))
-            price_now  = float(close.iloc[-1])
-            price_5ago = float(close.iloc[-6])
-            rsi_now    = float(rsi_ser.iloc[-1])
-            rsi_5ago   = float(rsi_ser.iloc[-6])
-            return price_now > price_5ago and rsi_now < rsi_5ago - 3
+            price_now   = float(close.iloc[-1])
+            price_10ago = float(close.iloc[-11]) if len(close) > 11 else float(close.iloc[0])
+            rsi_now     = float(rsi_ser.iloc[-1])
+            rsi_10ago   = float(rsi_ser.iloc[-11]) if len(rsi_ser) > 11 else float(rsi_ser.iloc[0])
+            # Need bigger RSI drop over more bars to confirm real divergence
+            return price_now > price_10ago and rsi_now < rsi_10ago - 5
         except Exception:
             return False
 

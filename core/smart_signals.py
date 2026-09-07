@@ -33,6 +33,10 @@ def _feedparser():
     import feedparser
     return feedparser
 
+def _earnings_analyser():
+    from core.earnings_analyser import get_earnings_analyser
+    return get_earnings_analyser()
+
 
 @dataclass
 class SignalResult:
@@ -142,6 +146,11 @@ class SectorStrengthSignal:
     def analyse(self, symbol: str, stock_change_pct: float) -> SignalResult:
         sector_sym = SECTOR_MAP.get(symbol, DEFAULT_SECTOR)
         sector_chg = self._get_sector_change(sector_sym)
+        # If sector data unavailable, use Nifty as fallback
+        if sector_chg == 0.0 and sector_sym != "^NSEI":
+            nifty_chg = self._get_sector_change("^NSEI")
+            if nifty_chg != 0.0:
+                sector_chg = nifty_chg
 
         outperform = stock_change_pct - sector_chg
         if outperform > 0.3:
@@ -170,14 +179,19 @@ class SectorStrengthSignal:
             if now - cached_time < self.CACHE_TTL:
                 return cached_val
         try:
-            import yfinance as yf
-            df  = yf.Ticker(sector_sym).history(period="2d", interval="1d")
-            if len(df) >= 2:
+            import warnings, yfinance as yf
+            # Suppress "possibly delisted" warnings — expected for some NSE indices
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                df = yf.Ticker(sector_sym).history(period="2d", interval="1d")
+            if df is not None and len(df) >= 2:
                 chg = (df["Close"].iloc[-1] - df["Close"].iloc[-2]) / df["Close"].iloc[-2] * 100
                 self._cache[sector_sym] = (now, round(float(chg), 2))
                 return round(float(chg), 2)
         except Exception as exc:
             logger.debug(f"Sector {sector_sym}: {exc}")
+        # Cache 0.0 for unavailable indices so we don't retry every call
+        self._cache[sector_sym] = (now, 0.0)
         return 0.0
 
 
@@ -243,51 +257,35 @@ class LinearForecastSignal:
 
 class EarningsGuardSignal:
     """
-    Checks if the stock has earnings announcement within next 3 days.
-    If yes → avoid (high volatility, unpredictable direction).
-    Uses yfinance calendar data.
-    Cached per symbol for 6 hours.
+    Full earnings analysis using EarningsAnalyser.
+    Checks: Revenue QoQ/YoY, PAT QoQ/YoY, result announcement.
+    Strong results → boost signal. Weak results → block trade.
+    Cached 6 hours.
     """
-    _cache: dict[str, tuple[float, SignalResult]] = {}
-    CACHE_TTL = 21600   # 6 hours
 
     def analyse(self, symbol: str) -> SignalResult:
-        now = time.time()
-        if symbol in self._cache:
-            cached_time, cached_result = self._cache[symbol]
-            if now - cached_time < self.CACHE_TTL:
-                return cached_result
-
-        result = self._check_earnings(symbol)
-        self._cache[symbol] = (now, result)
-        return result
-
-    def _check_earnings(self, symbol: str) -> SignalResult:
         try:
-            import yfinance as yf
-            cal = yf.Ticker(f"{symbol}.NS").calendar
-            if cal is None or cal.empty:
-                return SignalResult(True, 0.0, "No earnings date found", "")
+            ea     = _earnings_analyser()
+            result = ea.analyse(symbol)
 
-            # Calendar has 'Earnings Date' column
-            if "Earnings Date" in cal.index:
-                earn_date = pd.to_datetime(cal.loc["Earnings Date"].iloc[0])
-                days_away = (earn_date - pd.Timestamp.now()).days
-                if 0 <= days_away <= 3:
-                    return SignalResult(
-                        False, -0.5,
-                        f"Earnings in {days_away} day(s) — avoiding",
-                        f"Earnings: {earn_date.strftime('%d %b %Y')}",
-                    )
-                else:
-                    return SignalResult(
-                        True, 0.1,
-                        f"No earnings soon ({days_away}d away)",
-                        f"Next earnings: {earn_date.strftime('%d %b %Y')}",
-                    )
+            score   = result.score
+            verdict = result.verdict
+            summary = result.summary
+
+            if verdict == "STRONG":
+                return SignalResult(True,  score, f"Earnings STRONG ✅ {summary}", result.data_source)
+            elif verdict == "GOOD":
+                return SignalResult(True,  score, f"Earnings GOOD ✅ {summary}", result.data_source)
+            elif verdict == "NEUTRAL":
+                return SignalResult(True,  0.0,   f"Earnings NEUTRAL — {summary}", result.data_source)
+            elif verdict == "WEAK":
+                return SignalResult(False, score, f"Earnings WEAK ⚠️ {summary}", result.data_source)
+            else:   # AVOID
+                return SignalResult(False, score, f"Earnings AVOID ❌ {summary}", result.data_source)
+
         except Exception as exc:
-            logger.debug(f"Earnings {symbol}: {exc}")
-        return SignalResult(True, 0.0, "Earnings check unavailable", "")
+            logger.debug(f"EarningsGuard {symbol}: {exc}")
+            return SignalResult(True, 0.0, "Earnings check unavailable — allowing", "")
 
 
 # ── Module-level singletons ───────────────────────────────────────
