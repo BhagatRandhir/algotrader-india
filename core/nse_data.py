@@ -36,6 +36,7 @@ import threading
 from datetime import datetime, timedelta
 from functools import lru_cache
 from typing import Optional
+from urllib.parse import quote as urlquote
 
 import pandas as pd
 import numpy as np
@@ -464,6 +465,26 @@ class NSEDataClient:
         except Exception as exc:
             logger.debug(f"Most active parse: {exc}")
             return []
+
+    def get_index_snapshot(self, index: str = "NIFTY 50") -> dict:
+        """Read the live index row (e.g. NIFTY 50, NIFTY BANK)."""
+        url = f"{BASE}/api/equity-stockIndices?index={urlquote(index)}"
+        data = self._get(url)
+        if not data:
+            return {}
+        try:
+            for d in data.get("data", []):
+                symbol = (d.get("symbol") or "").strip().lower()
+                if symbol in {index.strip().lower(), index.strip().lower().replace(" ", "")}:
+                    return {
+                        "symbol":     d.get("symbol", index),
+                        "price":      float(d.get("lastPrice", 0)),
+                        "change":     float(d.get("change", 0)),
+                        "change_pct": float(d.get("pChange", 0)),
+                    }
+        except Exception as exc:
+            logger.debug(f"Index snapshot parse: {exc}")
+        return {}
 
     def get_nifty50_quotes(self) -> list[dict]:
         """All Nifty50 stocks with live quotes — for breadth calculation."""

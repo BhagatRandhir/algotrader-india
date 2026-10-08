@@ -74,6 +74,39 @@ def _enrich_positions(positions: dict) -> list[dict]:
     return result
 
 
+def _nifty_breadth() -> dict:
+    try:
+        quotes = _nse.get_nifty50_quotes()
+        positive = sum(1 for q in quotes if float(q.get("change_pct", 0)) > 0)
+        negative = sum(1 for q in quotes if float(q.get("change_pct", 0)) < 0)
+        neutral = max(len(quotes) - positive - negative, 0)
+        index = _nse.get_index_snapshot("NIFTY 50") or {}
+        return {
+            "symbol": index.get("symbol", "NIFTY 50"),
+            "price": round(float(index.get("price", 0)), 2),
+            "change": round(float(index.get("change", 0)), 2),
+            "change_pct": round(float(index.get("change_pct", 0)), 2),
+            "positive": positive,
+            "negative": negative,
+            "neutral": neutral,
+            "ratio": f"{positive}:{negative}",
+            "breadth_pct": round((positive / len(quotes)) * 100, 1) if quotes else 0,
+        }
+    except Exception as exc:
+        logger.debug(f"Nifty breadth error: {exc}")
+        return {
+            "symbol": "NIFTY 50",
+            "price": 0.0,
+            "change": 0.0,
+            "change_pct": 0.0,
+            "positive": 0,
+            "negative": 0,
+            "neutral": 0,
+            "ratio": "0:0",
+            "breadth_pct": 0,
+        }
+
+
 def _pnl_by_day(orders: list[dict], days: int = 30) -> list[dict]:
     daily: dict[str, float] = {}
     tcount: dict[str, int]  = {}
@@ -380,6 +413,7 @@ def live():
                     "status":     "OPEN",
                 })
 
+        nifty = _nifty_breadth()
         return jsonify({
             "nav":           round(nav, 2),
             "cash":          round(cash, 2),
@@ -390,6 +424,7 @@ def live():
             "nav_timeline":  store.get_nav_timeline(),
             "trade_history": open_trades + trade_history,
             "market_open":   is_market_open(),
+            "nifty":         nifty,
             "timestamp":     now_ist().isoformat(),
         })
     except Exception as exc:
