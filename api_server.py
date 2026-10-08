@@ -30,7 +30,19 @@ from core.risk import RiskConfig, RiskManager
 from utils.market_hours import is_market_open, now_ist
 
 app  = Flask(__name__)
-CORS(app)
+CORS(app, origins="*", supports_credentials=False)
+
+@app.after_request
+def add_cors_headers(response):
+    response.headers["Access-Control-Allow-Origin"]  = "*"
+    response.headers["Access-Control-Allow-Headers"] = "Content-Type, ngrok-skip-browser-warning"
+    response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+    response.headers["ngrok-skip-browser-warning"]   = "true"
+    return response
+
+@app.route("/api/options_preflight", methods=["OPTIONS"])
+def handle_options():
+    return "", 204
 
 INITIAL_CAPITAL = float(os.getenv("INITIAL_CAPITAL", "500000"))
 PORT            = int(os.getenv("PORT", "5050"))
@@ -79,9 +91,12 @@ def _pnl_by_day(orders: list[dict], days: int = 30) -> list[dict]:
                 pnl = (o["price"] - b["price"]) * o["quantity"]
                 daily[d]  = round(daily.get(d, 0) + pnl, 2)
                 tcount[d] = tcount.get(d, 0) + 1
+
     result = []
     for i in range(days - 1, -1, -1):
         d = (date.today() - timedelta(days=i)).isoformat()
+        if tcount.get(d, 0) <= 0:
+            continue
         result.append({
             "date":   d,
             "label":  (date.today() - timedelta(days=i)).strftime("%d %b"),
@@ -157,13 +172,7 @@ def _analyse_symbol(symbol: str) -> dict:
         {"label":"Volume > 1.5×",     "pass": bool(volume>1.5*avg_vol),   "detail":f"{volume/(avg_vol+1):.1f}× avg"},
         {"label":"Day change > 0.3%", "pass": bool(day_chg>=0.003),       "detail":f"{day_chg:+.2%}"},
     ]
-    score = sum(1 for c in checks if c["pass"])
-
-    if score >= 5:   verdict, confidence = "STRONG BUY", "HIGH"
-    elif score >= 4: verdict, confidence = "BUY",        "MEDIUM"
-    elif score == 3: verdict, confidence = "HOLD",       "NEUTRAL"
-    elif score == 2: verdict, confidence = "WEAK SELL",  "MEDIUM"
-    else:            verdict, confidence = "SELL",       "HIGH"
+    tech_score = sum(1 for c in checks if c["pass"])
 
     # 30-day price history
     df_hist = _broker.get_bars(symbol, interval="1d", period="3mo")
@@ -177,19 +186,83 @@ def _analyse_symbol(symbol: str) -> dict:
 
     # Run smart signals
     smart = {}
+    smart_score = 0.0
+    smart_allow = True
     try:
         smart = run_smart_signals(symbol, df, round(day_chg * 100, 2))
+        smart_score = smart.get("score", 0.0)
+        smart_allow = smart.get("allow", True)
     except Exception as exc:
         logger.debug(f"Smart signals {symbol}: {exc}")
 
     # Run earnings analysis
     earnings = {}
+    earnings_score = 0.0
     try:
         ea = get_earnings_analyser()
         er = ea.analyse(symbol)
         earnings = ea.format_for_display(er)
+        earnings_score = er.score
     except Exception as exc:
         logger.debug(f"Earnings analysis {symbol}: {exc}")
+
+    # ── Combined verdict using all 3 analyses ─────────────────────
+    # Technical:    40% weight (0-6 conditions → 0.0-1.0)
+    # Smart signals:35% weight (-1.0 to +1.0)
+    # Earnings:     25% weight (-1.0 to +1.0)
+    tech_norm    = (tech_score / 6.0) * 2 - 1      # convert 0-6 → -1.0 to +1.0
+    combined     = (tech_norm * 0.40) + (smart_score * 0.35) + (earnings_score * 0.25)
+    combined     = round(max(-1.0, min(1.0, combined)), 3)
+
+    # Hard override: if smart signals block → cap at HOLD
+    if not smart_allow and combined > 0:
+        combined = min(combined, 0.0)
+
+    # ── Final verdict — clear and actionable ────────────────────────
+    #
+    # Rules:
+    #   BUY   → combined > 0.30 AND tech >= 4/6 AND smart_allow
+    #   SELL  → combined < -0.20 OR (tech <= 2/6 AND combined < 0)
+    #   HOLD  → everything else — not enough conviction either way
+    #
+    # Confidence tells user HOW SURE the system is:
+    #   HIGH   → all 3 analyses agree
+    #   MEDIUM → 2 of 3 agree
+    #   LOW    → mixed signals — treat with caution
+
+    # Count how many analyses agree with direction
+    tech_bullish     = tech_score >= 4
+    tech_bearish     = tech_score <= 2
+    smart_bullish    = smart_score > 0.1
+    smart_bearish    = smart_score < -0.1
+    earnings_bullish = earnings_score > 0.1
+    earnings_bearish = earnings_score < -0.1
+
+    bull_count = sum([tech_bullish,    smart_bullish,    earnings_bullish])
+    bear_count = sum([tech_bearish,    smart_bearish,    earnings_bearish])
+
+    if combined >= 0.30 and tech_score >= 4 and smart_allow:
+        verdict    = "BUY"
+        confidence = "HIGH"   if bull_count >= 3 else "MEDIUM"
+        action     = "Enter trade. All signals aligned." if bull_count >= 3 else "Enter trade. Watch for confirmation."
+    elif combined >= 0.15 and tech_score >= 4 and smart_allow:
+        verdict    = "BUY"
+        confidence = "MEDIUM"
+        action     = "Can enter. Monitor closely — not all signals agree."
+    elif combined <= -0.30 or (tech_score <= 2 and combined < 0):
+        verdict    = "SELL"
+        confidence = "HIGH"   if bear_count >= 3 else "MEDIUM"
+        action     = "Exit or avoid. Multiple signals bearish." if bear_count >= 3 else "Exit position. Trend weakening."
+    elif combined <= -0.15 or not smart_allow:
+        verdict    = "SELL"
+        confidence = "MEDIUM"
+        action     = "Avoid new entry. Wait for better setup."
+    else:
+        verdict    = "HOLD"
+        confidence = "NEUTRAL"
+        action     = "No clear signal. Wait and watch."
+
+    score = tech_score   # keep for backward compat (6-point display)
 
     # Convert all numpy/pandas types to Python native for JSON serialization
     import numpy as np, json as _json
@@ -219,7 +292,15 @@ def _analyse_symbol(symbol: str) -> dict:
         "reason":        result.reason,
         "verdict":       verdict,
         "confidence":    confidence,
+        "action":        action,
         "score":         score,
+        "combined_score":combined,
+        "score_breakdown": {
+            "technical":  round(tech_norm, 3),
+            "smart":      round(smart_score, 3),
+            "earnings":   round(earnings_score, 3),
+            "combined":   combined,
+        },
         "target":        round(_risk.target_price(price), 2),
         "stop_loss":     round(_risk.stop_loss_price(price), 2),
         "checks":        checks,

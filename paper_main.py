@@ -34,6 +34,8 @@ from core.performance_tracker import PerformanceTracker
 from strategies.base import Signal
 from core.smart_signals import run_smart_signals
 from core.store import get_store
+from core.whatsapp_notifier import get_notifier
+from core.btst_manager import BTSTManager
 from core.market_filter import MarketContextFilter
 from strategies.momentum_bot import MomentumBotStrategy
 from utils.dashboard import render_dashboard, log_trade
@@ -80,6 +82,8 @@ _trades_today  = 0
 _trade_date:   date | None = None
 
 _mkt_filter = MarketContextFilter()
+_wa = get_notifier()
+_btst = None   # BTSTManager — initialised in main()
 _strategy  = MomentumBotStrategy(
     ema_fast   = 9,
     ema_mid    = 20,
@@ -292,6 +296,7 @@ def _try_buy(symbol: str, broker: PaperBroker, risk: RiskManager,
         _exit_mgr.register(symbol, ltp, qty, sl)
         log_trade("BUY", symbol, qty, ltp, sl, target, oid)
         _inc()
+        _wa.notify_buy(symbol, qty, ltp, sl, target, result.strength)
         _tracker.record_buy(
             trade_id=oid, symbol=symbol, quantity=qty, price=ltp,
             strategy_signals={"MomentumBot": "BUY"},
@@ -364,6 +369,7 @@ def _handle_exits(symbol: str, broker: PaperBroker, risk: RiskManager,
             log_trade("SELL", symbol, remaining, ltp, 0, 0, oid)
             _tracker.record_sell(symbol, ltp, exit_reason="STRATEGY")
             _exit_mgr.clear(symbol)
+            _wa.notify_sell(symbol, qty_to_sell, entry, ltp, pnl, decision.reason)
             icon = "✅" if pnl > 0 else "❌"
             console.print(
                 f"\n  {icon} [bold]SELL[/]  [bold]{symbol}[/]"
@@ -424,6 +430,8 @@ def main():
 
     broker        = PaperBroker(initial_capital=INITIAL_CAPITAL)
     risk          = RiskManager(risk_cfg)
+    _btst = BTSTManager(broker, notifier=_wa)
+    _btst = BTSTManager(broker, notifier=_wa)
     _starting_nav = broker.get_portfolio_value()
 
     base_watchlist = get_watchlist()
@@ -451,6 +459,7 @@ def main():
         # Daily loss kill-switch
         if not risk.check_daily_loss(daily_pnl, cash):
             broker.cancel_all_orders()
+            _wa.notify_alert(f"Daily loss limit hit — bot halted\nLoss: ₹{abs(daily_pnl):,.0f}")
             render_dashboard(cash, daily_pnl, positions, signal_log,
                              halted=True, halt_reason=risk.halt_reason,
                              loop_count=loop_count, market_open=mkt_open)
@@ -480,10 +489,20 @@ def main():
                 except Exception as exc:
                     logger.error(f"{symbol}: {exc}")
 
+            # ── BTST: manage exits (morning) + scan (afternoon) ──
+            try:
+                _btst.manage_exits()
+                if cash > 10_000:   # only scan if cash available
+                    _btst.scan_and_buy(watchlist, cash)
+            except Exception as exc:
+                logger.error(f"BTST loop error: {exc}")
+
             if loop_count % 5 == 0:
                 positions = broker.get_positions()
                 _print_status(positions, cash, daily_pnl)
                 _write_nav_snapshot(broker)
+                if _btst.get_positions():
+                    console.print(f"  🌙 [bold cyan]BTST:[/] {_btst.summary()}")
 
         else:
             mins = minutes_to_open()
@@ -501,6 +520,25 @@ def main():
     _tracker.record_daily(starting_nav=_starting_nav,
                           ending_nav=broker.get_portfolio_value())
     _tracker.print_report()
+    # Send daily summary
+    try:
+        all_orders = get_store().get_all_orders()
+        from datetime import date
+        today = date.today().isoformat()
+        today_orders = [o for o in all_orders if o.get("timestamp","").startswith(today) and o["status"]=="COMPLETE"]
+        sells = [o for o in today_orders if o["action"]=="SELL"]
+        buys  = {o["symbol"]:o for o in today_orders if o["action"]=="BUY"}
+        wins = losses = total_pnl = 0
+        for o in sells:
+            b = buys.get(o["symbol"])
+            if b:
+                pnl = (o["price"]-b["price"])*o["quantity"]
+                total_pnl += pnl
+                if pnl > 0: wins += 1
+                else: losses += 1
+        _wa.notify_daily_summary(_trades_today, wins, losses, total_pnl,
+                                  broker.get_portfolio_value())
+    except Exception: pass
     logger.info(f"Stopped. Total trades: {_trades_today}")
 
 

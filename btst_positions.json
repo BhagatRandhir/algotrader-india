@@ -1,0 +1,24 @@
+{
+  "GLAND": {
+    "symbol": "GLAND",
+    "qty": 3,
+    "entry_price": 2999.8,
+    "sl_price": 2939.8,
+    "entry_date": "2026-09-09",
+    "entry_time": "14:35",
+    "strength": 0.805,
+    "reason": "BTST\u2713 Close=2992 (100% of High) VolAcc=0.9\u00d7 RSI=75 DayChg=+0.60% [5/6] | Earnings:STRONG",
+    "product": "CNC"
+  },
+  "NOCIL": {
+    "symbol": "NOCIL",
+    "qty": 50,
+    "entry_price": 188.1,
+    "sl_price": 184.34,
+    "entry_date": "2026-09-09",
+    "entry_time": "14:35",
+    "strength": 0.747,
+    "reason": "BTST\u2713 Close=188 (100% of High) VolAcc=2.4\u00d7 RSI=68 DayChg=-0.35% [5/6] | Earnings:STRONG",
+    "product": "CNC"
+  }
+}
